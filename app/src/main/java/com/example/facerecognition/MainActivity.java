@@ -39,6 +39,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
     private Size mInputSize = null;
     private float mScale = 2.f;
     private boolean isDialogOpen = false;
+    private int missedFrame = 0;
     private MatOfByte mModelBufferFD, mConfigBufferFD, mModelBufferFR, mConfigBufferFR;
     private FaceDetectorYN mFaceDetector;
     private FaceRecognizerSF mFaceRecognizerSF;
@@ -95,6 +96,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
     }
 
     public void visualize(Mat rgba, Mat faces) {
+        boolean isFaceRecognized = false;
         List<Face> recognizedFaces = new ArrayList<>();
         float[] faceData = new float[faces.cols() * faces.channels()];
         for (int i = 0; i < faces.rows(); i++) {
@@ -104,7 +106,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
             if (!isValidRect(faceRect, mBgrScaled)) continue;
             Imgproc.rectangle(rgba, faceRectScaled, new Scalar(0, 255, 0), 2);
             String personName = null;
-            int qualityScore = 0;
+            int qualityScore = FaceQualityEvaluator.evaluateFaceQuality(rgba, faceRectScaled, 0.9);
             for (Face f : prevRecognizedFaces) {
                 if (f.isLastRecognizedFace(faceRectScaled)) {
                     f.setRect(faceRectScaled);
@@ -113,8 +115,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
                     break;
                 }
             }
-            if (personName == null && !isDialogOpen) {
-                qualityScore = FaceQualityEvaluator.evaluateFaceQuality(rgba, faceRectScaled, 0.9);
+            if (personName == null && !isDialogOpen && qualityScore >= 75) {
                 Mat feature = new Mat();
                 mFaceRecognizerSF.feature(mBgrScaled, feature);
                 feature = feature.clone();
@@ -122,17 +123,19 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
                 double l2n = 0;
                 Face recFace = null;
                 for (Face f : faceList) {
-                    double c = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_COSINE);
-                    double l = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_NORM_L2);
-                    if (c >= cosine_similar_threshold && l <= l2norm_similar_threshold) {
-                        if (recFace == null) {
-                            recFace = f;
-                            cos = c;
-                            l2n = l;
-                        } else if (c >= cos && l >= l2n) {
-                            recFace = f;
-                            cos = c;
-                            l2n = l;
+                    for (Mat m : f.getFeatureMatList()) {
+                        double c = mFaceRecognizerSF.match(feature, m, FaceRecognizerSF.FR_COSINE);
+                        double l = mFaceRecognizerSF.match(feature, m, FaceRecognizerSF.FR_NORM_L2);
+                        if (c >= cosine_similar_threshold && l <= l2norm_similar_threshold) {
+                            if (recFace == null) {
+                                recFace = f;
+                                cos = c;
+                                l2n = l;
+                            } else if (c >= cos && l >= l2n) {
+                                recFace = f;
+                                cos = c;
+                                l2n = l;
+                            }
                         }
                     }
                 }
@@ -140,14 +143,19 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
                     personName = recFace.getName();
                     recFace.setRect(faceRectScaled);
                     recognizedFaces.add(recFace);
-                } else if (qualityScore > 75) askForName(mBgrScaled, feature, faceRectScaled);
+                } else if (missedFrame > 10) askForName(feature, faceRectScaled);
             }
             if (personName == null) personName = "Inconnu";
+            else isFaceRecognized = true;
             Imgproc.putText(rgba, personName + " Q" + qualityScore,
                     new Point(faceRectScaled.x, faceRectScaled.y + faceRectScaled.height + 20),
                     Imgproc.FONT_HERSHEY_SIMPLEX, 0.8, new Scalar(255, 255, 255), 2);
         }
-        if (!isDialogOpen) prevRecognizedFaces = recognizedFaces;
+        if (!isDialogOpen) {
+            if (!isFaceRecognized) missedFrame++;
+            else missedFrame = 0;
+            if (!recognizedFaces.isEmpty() || missedFrame > 10) prevRecognizedFaces = recognizedFaces;
+        }
     }
 
     public Mat onCameraFrame(CvCameraViewFrame inputFrame) {
@@ -168,7 +176,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
         return mRgba;
     }
 
-    private void askForName(Mat face, Mat feature, Rect rect) {
+    private void askForName(Mat feature, Rect rect) {
         isDialogOpen = true;
         runOnUiThread(() -> {
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
@@ -178,11 +186,13 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
             builder.setPositiveButton("OK", (dialog, which) -> {
                 String name = input.getText().toString();
                 if (!name.isEmpty()) {
-                    saveFaceData(name, face, feature, rect);
+                    saveFaceData(name, feature, rect);
                 }
+                missedFrame = 0;
                 isDialogOpen = false;
             });
             builder.setNegativeButton("Annuler", (dialog, which) -> {
+                missedFrame = 0;
                 isDialogOpen = false;
                 dialog.cancel();
             });
@@ -190,11 +200,15 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
         });
     }
 
-    private void saveFaceData(String name, Mat mat, Mat feature, Rect rect) {
+    private void saveFaceData(String name, Mat feature, Rect rect) {
         for (Face face : faceList) {
-            if (face.getName().equals(name)) return;
+            if (face.getName().equals(name)) {
+                int index = faceList.indexOf(face);
+                faceList.get(index).setFeatureMat(feature);
+                return;
+            }
         }
-        faceList.add(new Face(name,mat,feature,rect));
+        faceList.add(new Face(name,feature,rect));
     }
 
     private boolean isValidRect(Rect rect, Mat mat) {
