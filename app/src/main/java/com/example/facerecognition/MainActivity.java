@@ -1,17 +1,15 @@
 package com.example.facerecognition;
 
 import java.lang.Math;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 import org.opencv.android.CameraActivity;
 import org.opencv.android.CameraBridgeViewBase.CvCameraViewFrame;
 import org.opencv.android.OpenCVLoader;
-import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfByte;
 import org.opencv.core.Point;
@@ -22,84 +20,40 @@ import org.opencv.android.CameraBridgeViewBase;
 import org.opencv.android.CameraBridgeViewBase.CvCameraViewListener2;
 import org.opencv.objdetect.FaceDetectorYN;
 import org.opencv.imgproc.Imgproc;
+import org.opencv.objdetect.FaceRecognizerSF;
 
-import android.app.Activity;
-import android.content.Context;
+import android.app.AlertDialog;
 import android.os.Bundle;
 import android.util.Log;
-import android.view.Menu;
-import android.view.MenuItem;
 import android.view.WindowManager;
-import android.widget.Toast;
+import android.widget.EditText;
 
 public class MainActivity extends CameraActivity implements CvCameraViewListener2 {
 
-    private static final String    TAG  = "OCVSample::Activity";
+    private static final String TAG = "OCVSample::Activity";
 
-    private static final Scalar    BOX_COLOR         = new Scalar(0, 255, 0);
+    private static double cosine_similar_threshold = 0.363;
+    private static double l2norm_similar_threshold = 1.128;
 
-    private Mat                    mRgba;
-    private Mat                    mBgr;
-    private Mat                    mBgrScaled;
-    private Size                   mInputSize = null;
-    private float                  mScale = 2.f;
-    private MatOfByte              mModelBuffer;
-    private MatOfByte              mConfigBuffer;
-    private FaceDetectorYN         mFaceDetector;
-    private Mat                    mFaces;
+    private Mat mRgba, mBgr, mBgrScaled;
+    private Size mInputSize = null;
+    private float mScale = 2.f;
+    private boolean isDialogOpen = false;
+    private MatOfByte mModelBufferFD, mConfigBufferFD, mModelBufferFR, mConfigBufferFR;
+    private FaceDetectorYN mFaceDetector;
+    private FaceRecognizerSF mFaceRecognizerSF;
+    private CameraBridgeViewBase mOpenCvCameraView;
+    private List<Face> faceList = new ArrayList<>();
+    private List<Face> prevRecognizedFaces = new ArrayList<>();
 
-    private CameraBridgeViewBase   mOpenCvCameraView;
-
-    public MainActivity() {
-        Log.i(TAG, "Instantiated new " + this.getClass());
-    }
-
-    /** Called when the activity is first created. */
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        Log.i(TAG, "called onCreate");
         super.onCreate(savedInstanceState);
-
-        if (OpenCVLoader.initLocal()) {
-            Log.i(TAG, "OpenCV loaded successfully");
-        } else {
-            Log.e(TAG, "OpenCV initialization failed!");
-            (Toast.makeText(this, "OpenCV initialization failed!", Toast.LENGTH_LONG)).show();
-            return;
-        }
-
-        byte[] buffer;
-        try {
-            // load cascade file from application resources
-            InputStream is = getResources().openRawResource(R.raw.face_detection_yunet_2023mar);
-
-            int size = is.available();
-            buffer = new byte[size];
-            int bytesRead = is.read(buffer);
-            is.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-            Log.e(TAG, "Failed to ONNX model from resources! Exception thrown: " + e);
-            (Toast.makeText(this, "Failed to ONNX model from resources!", Toast.LENGTH_LONG)).show();
-            return;
-        }
-
-        mModelBuffer = new MatOfByte(buffer);
-        mConfigBuffer = new MatOfByte();
-
-        mFaceDetector = FaceDetectorYN.create("onnx", mModelBuffer, mConfigBuffer, new Size(320, 320));
-        if (mFaceDetector == null) {
-            Log.e(TAG, "Failed to create FaceDetectorYN!");
-            (Toast.makeText(this, "Failed to create FaceDetectorYN!", Toast.LENGTH_LONG)).show();
-            return;
-        } else
-            Log.i(TAG, "FaceDetectorYN initialized successfully!");
-
-
+        if (!OpenCVLoader.initLocal()) return;
+        mFaceDetector = getFaceDetector();
+        mFaceRecognizerSF = getFaceRecognizerSF();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-
         setContentView(R.layout.activity_main);
-
         mOpenCvCameraView = (CameraBridgeViewBase) findViewById(R.id.fd_activity_surface_view);
         mOpenCvCameraView.setVisibility(CameraBridgeViewBase.VISIBLE);
         mOpenCvCameraView.setCvCameraViewListener(this);
@@ -107,19 +61,15 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
     }
 
     @Override
-    public void onPause()
-    {
+    public void onPause() {
         super.onPause();
-        if (mOpenCvCameraView != null)
-            mOpenCvCameraView.disableView();
+        if (mOpenCvCameraView != null) mOpenCvCameraView.disableView();
     }
 
     @Override
-    public void onResume()
-    {
+    public void onResume() {
         super.onResume();
-        if (mOpenCvCameraView != null)
-            mOpenCvCameraView.enableView();
+        if (mOpenCvCameraView != null) mOpenCvCameraView.enableView();
     }
 
     @Override
@@ -136,54 +86,156 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
         mRgba = new Mat();
         mBgr = new Mat();
         mBgrScaled = new Mat();
-        mFaces = new Mat();
     }
 
     public void onCameraViewStopped() {
         mRgba.release();
         mBgr.release();
         mBgrScaled.release();
-        mFaces.release();
     }
 
     public void visualize(Mat rgba, Mat faces) {
-
-        int thickness = 2;
+        List<Face> recognizedFaces = new ArrayList<>();
         float[] faceData = new float[faces.cols() * faces.channels()];
-
-        for (int i = 0; i < faces.rows(); i++)
-        {
+        for (int i = 0; i < faces.rows(); i++) {
             faces.get(i, 0, faceData);
-
-            Log.d(TAG, "Detected face (" + faceData[0] + ", " + faceData[1] + ", " +
-                    faceData[2] + ", " + faceData[3] + ")");
-
-            // Draw bounding box
-            Imgproc.rectangle(rgba, new Rect(Math.round(mScale*faceData[0]), Math.round(mScale*faceData[1]),
-                            Math.round(mScale*faceData[2]), Math.round(mScale*faceData[3])),
-                    BOX_COLOR, thickness);
+            Rect faceRect = new Rect(Math.round(faceData[0]), Math.round(faceData[1]), Math.round(faceData[2]), Math.round(faceData[3]));
+            Rect faceRectScaled = new Rect(Math.round(mScale*faceData[0]), Math.round(mScale*faceData[1]), Math.round(mScale*faceData[2]), Math.round(mScale*faceData[3]));
+            if (!isValidRect(faceRect, mBgrScaled)) continue;
+            Imgproc.rectangle(rgba, faceRectScaled, new Scalar(0, 255, 0), 2);
+            String personName = null;
+            int qualityScore = 0;
+            for (Face f : prevRecognizedFaces) {
+                if (f.isLastRecognizedFace(faceRectScaled)) {
+                    f.setRect(faceRectScaled);
+                    recognizedFaces.add(f);
+                    personName = f.getName();
+                    break;
+                }
+            }
+            if (personName == null && !isDialogOpen) {
+                qualityScore = FaceQualityEvaluator.evaluateFaceQuality(rgba, faceRectScaled, 0.9);
+                Mat feature = new Mat();
+                mFaceRecognizerSF.feature(mBgrScaled, feature);
+                feature = feature.clone();
+                double cos = 0;
+                double l2n = 0;
+                Face recFace = null;
+                for (Face f : faceList) {
+                    double c = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_COSINE);
+                    double l = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_NORM_L2);
+                    if (c >= cosine_similar_threshold && l <= l2norm_similar_threshold) {
+                        if (recFace == null) {
+                            recFace = f;
+                            cos = c;
+                            l2n = l;
+                        } else if (c >= cos && l >= l2n) {
+                            recFace = f;
+                            cos = c;
+                            l2n = l;
+                        }
+                    }
+                }
+                if (recFace != null) {
+                    personName = recFace.getName();
+                    recFace.setRect(faceRectScaled);
+                    recognizedFaces.add(recFace);
+                } else if (qualityScore > 75) askForName(mBgrScaled, feature, faceRectScaled);
+            }
+            if (personName == null) personName = "Inconnu";
+            Imgproc.putText(rgba, personName + " Q" + qualityScore,
+                    new Point(faceRectScaled.x, faceRectScaled.y + faceRectScaled.height + 20),
+                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.8, new Scalar(255, 255, 255), 2);
         }
+        if (!isDialogOpen) prevRecognizedFaces = recognizedFaces;
     }
 
     public Mat onCameraFrame(CvCameraViewFrame inputFrame) {
-
         mRgba = inputFrame.rgba();
-
         if (mFaceDetector != null) {
             Size inputSize = new Size(Math.round(mRgba.cols() / mScale), Math.round(mRgba.rows() / mScale));
             if (mInputSize == null || !mInputSize.equals(inputSize)) {
                 mInputSize = inputSize;
                 mFaceDetector.setInputSize(mInputSize);
             }
-
             Imgproc.cvtColor(mRgba, mBgr, Imgproc.COLOR_RGBA2BGR);
             Imgproc.resize(mBgr, mBgrScaled, mInputSize);
-
+            Mat mFaces = new Mat();
             int status = mFaceDetector.detect(mBgrScaled, mFaces);
             Log.d(TAG, "Detector returned status " + status);
             visualize(mRgba, mFaces);
         }
-
         return mRgba;
+    }
+
+    private void askForName(Mat face, Mat feature, Rect rect) {
+        isDialogOpen = true;
+        runOnUiThread(() -> {
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            builder.setTitle("Nouvelle personne détectée");
+            final EditText input = new EditText(this);
+            builder.setView(input);
+            builder.setPositiveButton("OK", (dialog, which) -> {
+                String name = input.getText().toString();
+                if (!name.isEmpty()) {
+                    saveFaceData(name, face, feature, rect);
+                }
+                isDialogOpen = false;
+            });
+            builder.setNegativeButton("Annuler", (dialog, which) -> {
+                isDialogOpen = false;
+                dialog.cancel();
+            });
+            builder.show();
+        });
+    }
+
+    private void saveFaceData(String name, Mat mat, Mat feature, Rect rect) {
+        for (Face face : faceList) {
+            if (face.getName().equals(name)) return;
+        }
+        faceList.add(new Face(name,mat,feature,rect));
+    }
+
+    private boolean isValidRect(Rect rect, Mat mat) {
+        return rect.x >= 0 && rect.y >= 0 && rect.width > 0 && rect.height > 0 && rect.x + rect.width <= mat.cols() && rect.y + rect.height <= mat.rows();
+    }
+
+    private FaceDetectorYN getFaceDetector() {
+        byte[] buffer;
+        try {
+            InputStream is = getResources().openRawResource(R.raw.face_detection_yunet_2023mar);
+            int size = is.available();
+            buffer = new byte[size];
+            int bytesRead = is.read(buffer);
+            is.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+
+        mModelBufferFD = new MatOfByte(buffer);
+        mConfigBufferFD = new MatOfByte();
+
+        return FaceDetectorYN.create("onnx", mModelBufferFD, mConfigBufferFD, new Size(320, 320));
+    }
+
+    private FaceRecognizerSF getFaceRecognizerSF() {
+        byte[] buffer;
+        try {
+            InputStream is = getResources().openRawResource(R.raw.face_recognition_sface_2021dec);
+            int size = is.available();
+            buffer = new byte[size];
+            int bytesRead = is.read(buffer);
+            is.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+
+        mModelBufferFR = new MatOfByte(buffer);
+        mConfigBufferFR = new MatOfByte();
+
+        return FaceRecognizerSF.create("onnx", mModelBufferFR, mConfigBufferFR);
     }
 }
