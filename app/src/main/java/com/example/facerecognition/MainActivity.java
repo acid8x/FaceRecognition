@@ -27,6 +27,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.Toast;
 
 public class MainActivity extends CameraActivity implements CvCameraViewListener2 {
 
@@ -96,6 +97,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
     }
 
     public void visualize(Mat rgba, Mat faces) {
+        Log.i("SIZE", "Face size = " + faceList.size());
         boolean isFaceRecognized = false;
         List<Face> recognizedFaces = new ArrayList<>();
         float[] faceData = new float[faces.cols() * faces.channels()];
@@ -123,19 +125,17 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
                 double l2n = 0;
                 Face recFace = null;
                 for (Face f : faceList) {
-                    for (Mat m : f.getFeatureMatList()) {
-                        double c = mFaceRecognizerSF.match(feature, m, FaceRecognizerSF.FR_COSINE);
-                        double l = mFaceRecognizerSF.match(feature, m, FaceRecognizerSF.FR_NORM_L2);
-                        if (c >= cosine_similar_threshold && l <= l2norm_similar_threshold) {
-                            if (recFace == null) {
-                                recFace = f;
-                                cos = c;
-                                l2n = l;
-                            } else if (c >= cos && l >= l2n) {
-                                recFace = f;
-                                cos = c;
-                                l2n = l;
-                            }
+                    double c = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_COSINE);
+                    double l = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_NORM_L2);
+                    if (c >= cosine_similar_threshold && l <= l2norm_similar_threshold) {
+                        if (recFace == null) {
+                            recFace = f;
+                            cos = c;
+                            l2n = l;
+                        } else if (c >= cos && l >= l2n) {
+                            recFace = f;
+                            cos = c;
+                            l2n = l;
                         }
                     }
                 }
@@ -186,7 +186,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
             builder.setPositiveButton("OK", (dialog, which) -> {
                 String name = input.getText().toString();
                 if (!name.isEmpty()) {
-                    saveFaceData(name, feature, rect);
+                    faceList.add(new Face(name,feature,rect));
                 }
                 missedFrame = 0;
                 isDialogOpen = false;
@@ -198,17 +198,6 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
             });
             builder.show();
         });
-    }
-
-    private void saveFaceData(String name, Mat feature, Rect rect) {
-        for (Face face : faceList) {
-            if (face.getName().equals(name)) {
-                int index = faceList.indexOf(face);
-                faceList.get(index).setFeatureMat(feature);
-                return;
-            }
-        }
-        faceList.add(new Face(name,feature,rect));
     }
 
     private boolean isValidRect(Rect rect, Mat mat) {
