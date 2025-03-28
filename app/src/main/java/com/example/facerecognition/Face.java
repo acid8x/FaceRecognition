@@ -15,17 +15,10 @@ public class Face {
         this.rect = rect;
     }
 
-    public boolean isLastRecognizedFace(Rect newRect) {
-        if (rect == null) {
-            return false;
-        }
-        if (newRect.width - 20 >= rect.width || newRect.width + 20 <= rect.width || newRect.height - 20 >= rect.height || newRect.height + 20 <= rect.height) {
-            return false;
-        }
-        if (newRect.x + 10 >= rect.x && newRect.x - 10 <= rect.x && newRect.y + 10 >= rect.y && newRect.y - 10 <= rect.y) {
-            return true;
-        }
-        return false;
+    public double getRectDistance(Rect newRect) {
+        double d = Math.sqrt((newRect.y - rect.y) * (newRect.y - rect.y) + (newRect.x - rect.x) * (newRect.x - rect.x));
+        d /= ((double) newRect.width / 100);
+        return d;
     }
 
     public String getName() {

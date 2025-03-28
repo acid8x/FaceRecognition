@@ -97,7 +97,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
     }
 
     public void visualize(Mat rgba, Mat faces) {
-        Log.i("SIZE", "Face size = " + faceList.size());
+        String error = faces.rows() + " faces";
         boolean isFaceRecognized = false;
         List<Face> recognizedFaces = new ArrayList<>();
         float[] faceData = new float[faces.cols() * faces.channels()];
@@ -105,17 +105,28 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
             faces.get(i, 0, faceData);
             Rect faceRect = new Rect(Math.round(faceData[0]), Math.round(faceData[1]), Math.round(faceData[2]), Math.round(faceData[3]));
             Rect faceRectScaled = new Rect(Math.round(mScale*faceData[0]), Math.round(mScale*faceData[1]), Math.round(mScale*faceData[2]), Math.round(mScale*faceData[3]));
-            if (!isValidRect(faceRect, mBgrScaled)) continue;
+            if (!isValidRect(faceRect, mBgrScaled)) {
+                error += ", face[" + i + "] not valid rect";
+                continue;
+            }
             Imgproc.rectangle(rgba, faceRectScaled, new Scalar(0, 255, 0), 2);
             String personName = null;
             int qualityScore = FaceQualityEvaluator.evaluateFaceQuality(rgba, faceRectScaled, 0.9);
+            double distance = 1000;
+            Face recognizedFace = null;
             for (Face f : prevRecognizedFaces) {
-                if (f.isLastRecognizedFace(faceRectScaled)) {
-                    f.setRect(faceRectScaled);
-                    recognizedFaces.add(f);
-                    personName = f.getName();
-                    break;
+                double d = f.getRectDistance(faceRectScaled);
+                error += ", face[" + i + "] " + f.getName() + " is at " + d + " width: " + faceRectScaled.width;
+                if (d < distance) {
+                    recognizedFace = f;
+                    distance = d;
                 }
+            }
+            if (recognizedFace != null && distance < 20) {
+                prevRecognizedFaces.get(prevRecognizedFaces.indexOf(recognizedFace)).setRect(faceRectScaled);
+                personName = recognizedFace.getName();
+                recognizedFace.setRect(faceRectScaled);
+                recognizedFaces.add(recognizedFace);
             }
             if (personName == null && !isDialogOpen && qualityScore >= 75) {
                 Mat feature = new Mat();
@@ -127,6 +138,7 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
                 for (Face f : faceList) {
                     double c = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_COSINE);
                     double l = mFaceRecognizerSF.match(feature, f.getFeatureMat(), FaceRecognizerSF.FR_NORM_L2);
+                    error += ", face[" + i + "] " + f.getName() + " cos: " + c + " l2: " + l;
                     if (c >= cosine_similar_threshold && l <= l2norm_similar_threshold) {
                         if (recFace == null) {
                             recFace = f;
@@ -147,6 +159,8 @@ public class MainActivity extends CameraActivity implements CvCameraViewListener
             }
             if (personName == null) personName = "Inconnu";
             else isFaceRecognized = true;
+            error += ": Detected name " + personName;
+            Log.i("MYINFO", error);
             Imgproc.putText(rgba, personName + " Q" + qualityScore,
                     new Point(faceRectScaled.x, faceRectScaled.y + faceRectScaled.height + 20),
                     Imgproc.FONT_HERSHEY_SIMPLEX, 0.8, new Scalar(255, 255, 255), 2);
